@@ -21,10 +21,6 @@ on:
 permissions:
   contents: read
 
-defaults:
-  run:
-    working-directory: url-shortner
-
 jobs:
   build:
     runs-on: ubuntu-latest
