@@ -1,0 +1,135 @@
+name: url-shortner
+
+on:
+  pull_request:
+    paths:
+      - "url-shortner/**"
+      - ".github/workflows/url-shortner.yml"
+  push:
+    branches: [main]
+    paths:
+      - "url-shortner/**"
+      - ".github/workflows/url-shortner.yml"
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Target environment
+        type: choice
+        options: [dev, prod]
+        default: dev
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    working-directory: url-shortner
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: url-shortner/package-lock.json
+
+      - run: npm ci
+      - run: npx tsc --noEmit
+      - run: npm run package:lambda
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lambda-zip
+          path: url-shortner/lambda.zip
+          retention-days: 7
+
+  terraform-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "^1.10.0"
+      - run: terraform fmt -check -recursive
+        working-directory: url-shortner/infra
+      - run: terraform init -backend=false -input=false && terraform validate
+        working-directory: url-shortner/infra
+
+  deploy:
+    if: github.event_name != 'pull_request'
+    needs: [build, terraform-check]
+    runs-on: ubuntu-latest
+    # GitHub Environment: holds vars (AWS_DEPLOY_ROLE_ARN, ARTIFACTS_BUCKET, TF_STATE_BUCKET, AWS_REGION) and prod approval rules.
+    environment: ${{ inputs.environment || 'dev' }}
+    concurrency:
+      group: url-shortner-deploy-${{ inputs.environment || 'dev' }}
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      TF_ENV: ${{ inputs.environment || 'dev' }}
+      ARTIFACT_KEY: url-shortner/lambda/${{ github.sha }}.zip
+      TF_IN_AUTOMATION: "true"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: lambda-zip
+          path: url-shortner
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION || 'us-east-1' }}
+
+      - name: Upload Lambda artifact to S3
+        run: |
+          aws s3 cp lambda.zip "s3://${{ vars.ARTIFACTS_BUCKET }}/${ARTIFACT_KEY}" \
+            --metadata "git-sha=${{ github.sha }}" --only-show-errors
+          echo "Uploaded s3://${{ vars.ARTIFACTS_BUCKET }}/${ARTIFACT_KEY}"
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "^1.10.0"
+          terraform_wrapper: false
+
+      - name: Terraform init
+        working-directory: url-shortner/infra
+        run: |
+          terraform init -input=false \
+            -backend-config="envs/${TF_ENV}.backend.hcl" \
+            -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}"
+
+      - name: Terraform plan
+        working-directory: url-shortner/infra
+        run: |
+          terraform plan -input=false -out=tfplan \
+            -var-file="envs/${TF_ENV}.tfvars" \
+            -var="artifacts_bucket=${{ vars.ARTIFACTS_BUCKET }}" \
+            -var="artifact_key=${ARTIFACT_KEY}"
+
+      - name: Terraform apply
+        working-directory: url-shortner/infra
+        run: terraform apply -input=false tfplan
+
+      - name: Run DB migrations
+        working-directory: url-shortner/infra
+        run: |
+          fn=$(terraform output -raw migrate_function_name)
+          fn_error=$(aws lambda invoke --function-name "$fn" \
+            --cli-binary-format raw-in-base64-out --payload '{}' \
+            --query FunctionError --output text /tmp/migrate.json)
+          cat /tmp/migrate.json; echo
+          if [ "$fn_error" != "None" ]; then echo "Migration failed: $fn_error"; exit 1; fi
+
+      - name: Smoke test
+        working-directory: url-shortner/infra
+        run: |
+          endpoint=$(terraform output -raw api_endpoint)
+          curl -fsS --retry 5 --retry-delay 3 --retry-all-errors "${endpoint}/health"
