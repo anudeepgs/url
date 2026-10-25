@@ -1,0 +1,43 @@
+{
+  "name": "url-shortner",
+  "version": "1.0.0",
+  "description": "",
+  "main": "dist/index.js",
+  "scripts": {
+    "dev": "tsx watch src/index.ts | pino-pretty",
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "package:lambda": "rm -rf .lambda lambda.zip && tsc && mkdir .lambda && cp -R dist package.json package-lock.json .lambda/ && cd .lambda && npm ci --omit=dev && zip -qr ../lambda.zip .",
+    "typeorm": "tsx ./node_modules/typeorm/cli.js -d src/config/data-source.ts",
+    "migration:generate": "npm run typeorm -- migration:generate",
+    "migration:run": "npm run typeorm -- migration:run",
+    "migration:revert": "npm run typeorm -- migration:revert",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "devDependencies": {
+    "@types/aws-lambda": "^8.10.164",
+    "@types/express": "^5.0.6",
+    "@types/node": "^26.6.5",
+    "@types/pg": "^8.23.1",
+    "pino-pretty": "^13.2.0",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2"
+  },
+  "dependencies": {
+    "dotenv": "^18.0.9",
+    "express": "^5.3.0",
+    "helmet": "^8.3.0",
+    "ioredis": "^5.11.1",
+    "pg": "^8.23.1",
+    "pino": "^10.4.0",
+    "pino-http": "^11.0.0",
+    "reflect-metadata": "^0.2.2",
+    "serverless-http": "^4.0.0",
+    "typeorm": "^1.1.2",
+    "zod": "^4.6.7"
+  }
+}

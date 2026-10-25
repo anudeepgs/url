@@ -1,0 +1,9 @@
+node_modules/
+dist/
+.lambda/
+lambda.zip
+.env
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
